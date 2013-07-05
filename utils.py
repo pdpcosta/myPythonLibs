@@ -13,6 +13,10 @@
 #  18/04/2013 - Added 'visualcheckImageDB' function
 #  18/04/2013 - Added 'dumpMatrix2File' and 'loadMatrixFromFile'
 #  07/06/2013 - Added 'applyKernelToPoints'
+#  03/07/2013 - Added 'cropnscaleImageDB' function. 'crop' function modified
+#               to reflect changes in the library procdb (shapes variable as list
+#               of tuples)
+#  05/07/2013 - Added functions: 'alignPairShapes', 'RST', 'alignNImages'
 #
 # Notice:
 # Copyright (C) 2013  Paula D. Paro Costa
@@ -21,7 +25,7 @@
 import numpy as np
 import Image,ImageDraw
 import cv2
-
+import os
 
 
 
@@ -83,6 +87,176 @@ def centroid(sv):
     yc=sum(sv_y)/float(len(sv_y))
     return xc,yc
 
+#========================================================================
+#               alignPairShapes
+#========================================================================
+def alignPairShapes(s1,s2,weights):
+    """
+    Given two vector shapes, the function applies
+    the minimum squared error to align s2 with s1.
+    The implementation is based on the paper from
+    Cootes et al., "Active Shape Models -- Their Training and Application", 1995
+    See Appendix A.
+    
+    Key arguments:
+    s1   -- array of tuples representing the first shape vector with n landmarks
+            [(x1,y1),(x2,y2),...,(xn,yn)]
+    s2   -- array of tuples representing the second shape vector with n landmarks
+    weights -- vector of n weights that control how a landmark influences the alignment
+               (greater weight values have greater impact on the alignment).
+
+    Outputs:
+    The coefficients of the affine Rotation, Scaling and Translation (RST) transform
+    ax -- s.cos(theta)
+    ay -- s.sin(theta)
+    tx -- translation in x
+    ty -- translation in y
+    """
+
+
+    s1=np.asarray(s1)
+    s2=np.asarray(s2)
+    
+    x1k=s1[:,0]
+    y1k=s1[:,1]
+    x2k=s2[:,0]
+    y2k=s2[:,1]
+
+    X1=sum(x1k*weights) 
+    X2=sum(x2k*weights)
+
+    Y1=sum(y1k*weights)
+    Y2=sum(y2k*weights)
+
+    Z=sum(weights*(pow(x2k,2)+pow(y2k,2)))
+
+    W=sum(weights)
+
+    C1=sum(weights*(x1k*x2k+y1k*y2k))
+
+    C2=sum(weights*(y1k*x2k-x1k*y2k))
+    
+    a=np.asarray([[X2,-Y2,W,0],[Y2,X2,0,W],[Z,0,X2,Y2],[0,Z,-Y2,X2]])
+    b=np.asarray([X1,Y1,C1,C2])
+
+    x=np.linalg.solve(a,b)
+
+    ax=x[0]
+    ay=x[1]
+    tx=x[2]
+    ty=x[3]
+    return ax,ay,tx,ty
+
+#===========================================================
+#                   RST
+#===========================================================
+def RST(s,ax,ay,tx,ty):
+    """
+    Apply rotation, scale and translation to a shape vector,
+    given the coefficients of the affine transformation matrix.
+    
+    Key arguments:
+    s -- array of tuples representing the shape vector with n landmarks
+         [(x1,y1),(x2,y2),...,(xn,yn)]
+    The coefficients of the affine Rotation, Scaling and Translation (RST) transform:
+    ax -- s.cos(theta)
+    ay -- s.sin(theta)
+    tx -- translation in x
+    ty -- translation in y
+    """
+    
+    svRST=np.asarray(np.zeros(s.shape))
+    svRST[:,0]=ax*s[:,0]-ay*s[:,1]+tx
+    svRST[:,1]=ay*s[:,0]+ax*s[:,1]+ty
+
+    return svRST
+
+
+#========================================================================
+#                   alignNImages
+#========================================================================
+def alignNImages(images,shapes,weights,save_aligned_images=True):
+    """
+    
+    Aligns a set of images according to their shapes.
+    Together with functions 'alignPairShapes' and 'RST' this
+    function implements the shape alignment algorithm used in
+    the Active Shape Model (ASM). For additional references see:
+    "Active Shape Models", Cootes et al., 1995
+    "Active Appearance Models", Stegmann, 2000, Chapter 4, Section 4.4.2
+    
+    Key arguments:
+    images  -- array of images filenames (N images)
+    shapes  -- array of shapes corresponding to each image
+    weights -- vector of weights that control how a landmark influences 
+               the alignment (greater weight values have greater impact 
+               on the alignment).
+    save_aligned_images -- if True, aligned images are saved in the same
+                           folder with "aligned" prefix. 
+                           
+    """             
+        
+    shapes=np.asarray(shapes)
+    aligned_shapes=np.asarray(np.zeros(shapes.shape))
+    aligned_shapes.astype(float)
+
+    print "Starting alignment of "+str(len(images))+"."
+    
+    # Variables initialization
+    it=0
+    first=True
+    mean_shape=shapes[0]
+    print mean_shape.shape
+    previous_mean_shape=np.asarray(np.zeros((shapes.shape[1],shapes.shape[2])))
+    ax=np.asarray(np.zeros(shapes.shape[0]))
+    ay=np.asarray(np.zeros(shapes.shape[0]))
+    tx=np.asarray(np.zeros(shapes.shape[0]))
+    ty=np.asarray(np.zeros(shapes.shape[0]))
+    
+    # The "while" loop checks the convergence of the alignment.
+    # The convergence is checked measuring the difference of previous mean_shape
+    # an the last calculated mean shape.    
+    
+    error=sum(abs(np.ravel(previous_mean_shape)-np.ravel(mean_shape)))
+    print "error = "+str(error)              
+    while (error>0.0001):
+
+        print sum(abs(np.ravel(previous_mean_shape)-np.ravel(mean_shape)))
+        print 'Iteration ',it
+        it=it+1
+        previous_mean_shape=np.copy(mean_shape)
+     
+
+        # Normalizing the mean shape to the first shape
+        axm,aym,txm,tym=alignPairShapes(shapes[0],mean_shape,weights)
+        mean_shape=RST(mean_shape,axm,aym,txm,tym)
+
+        # Align all shapes to the mean shape
+        for i in range(len(images)):
+            #print 'Aligning shape '+str(i)
+            ax[i],ay[i],tx[i],ty[i]=alignPairShapes(mean_shape,shapes[i],weights)
+            aligned_shapes[i]=RST(shapes[i],ax[i],ay[i],tx[i],ty[i])
+
+        # Calculate new mean shape
+        mean_shape=np.add.reduce(aligned_shapes)/float(aligned_shapes.shape[0])
+        #print mean_shape
+
+        error=sum(abs(np.ravel(previous_mean_shape)-np.ravel(mean_shape)))
+        print "error = "+str(error) 
+        
+    if save_aligned_images==True:
+            for i in range(len(images)):
+                im=cv2.imread(images[i])
+                dsize=(im.shape[1],im.shape[0])
+                T=np.asarray([[ax[i],-ay[i],tx[i]],[ay[i],ax[i],ty[i]]])
+                im=cv2.warpAffine(im,T,dsize)
+                fileName, fileExtension = os.path.splitext(os.path.basename(images[i]))
+                cv2.imwrite(fileName+'_aligned'+fileExtension,im)
+                            
+    return mean_shape,aligned_shapes
+
+
+
 #==================================================
 #               dist
 #
@@ -120,7 +294,7 @@ def nearest_point(x,y):
     x=np.asarray(x)
     y=np.asarray(y)
     number_of_points=x.shape[0]
-    d=np.array(np.zeros(number_of_points))
+    
 
     ut1,ut2=np.triu_indices(number_of_points,1) #without the main diagonal
     distances=dist(x[ut1[:]],y[ut1[:]],x[ut2[:]],y[ut2[:]])
@@ -180,11 +354,11 @@ def crop(im,ox,oy,width,height):
 
 def addcoltofile(filename,a,sep):
     a=np.ravel(np.asarray(a))
-    s=sep
+    
     try:
         f=open(filename,'r+')
     except IOError:
-        s=""
+        
         try:
             f=open(filename,'w+r+')
         except IOError:
@@ -463,7 +637,7 @@ def applyKernelToPoints(image,pts,kernel,border_type='BLACK'):
 #               cropnscaleImageDB
 #========================================================================
 
-def cropnscaleImageDB(imagedb,newimagedb,ox,oy,width,height,scale,suffix,verbose=False):
+def cropnscaleImageDB(imagedb,newimagedb,ox,oy,width,height,scale,folder="",verbose=False):
     """
     Applies a crop (region of interest) followed by a scale operation
     on a set of images listed on an image database.
@@ -479,23 +653,32 @@ def cropnscaleImageDB(imagedb,newimagedb,ox,oy,width,height,scale,suffix,verbose
     width -- width of the region of interest
     height -- height of the region of interest
     scale -- used to resize the region of interest
-    prefix -- prefix to be added to the transformed images
+    folder -- where the images are going to be saved; if not provided,
+              a new directory is created automatically.
     verbose -- If True provides feedback about the images being processed
     
     """
+
 
     import procdb
     import os
 
     images,shapes,labels=procdb.processImageDB(imagedb)
     shapes=np.asarray(shapes)
-    print shapes.shape
+    #print shapes.shape
 
     if verbose==True:
         print str(len(images))+" images to process."
     
     
-    newimagedb=open(newimagedb,'w')
+    suffix="_"+str(int(width*scale))+"x"+str(int(height*scale))
+    if folder=="":
+        folder=str(int(width*scale))+"x"+str(int(height*scale))
+        if not os.path.exists(folder): os.makedirs(folder)
+    else:
+        if not os.path.exists(folder):os.makedirs(folder)
+
+    newimagedb=open(folder+"/"+newimagedb,'w')
 
     for i in range(len(images)):
         im=cv2.imread(images[i])
@@ -505,7 +688,8 @@ def cropnscaleImageDB(imagedb,newimagedb,ox,oy,width,height,scale,suffix,verbose
         im_resized=np.asarray(np.zeros((newheight,newwidth)))
         im_resized=cv2.resize(im_cropped,(newwidth,newheight),im_resized,scale,scale,cv2.INTER_AREA)
         fileName, fileExtension = os.path.splitext(images[i])
-        retval=cv2.imwrite(fileName+suffix+fileExtension,im_resized)
+        
+        retval=cv2.imwrite(folder+"/"+fileName+suffix+fileExtension,im_resized)
         if retval==False:
             print "Problem to save modified image."
             return False
