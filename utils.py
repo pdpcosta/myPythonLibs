@@ -3,8 +3,8 @@
 #============================================================================
 # Script name: utils.py
 # Created on: 10/10/2012
-# Author: Paula D. P. Costa
-# Purpose: Collection of small pieces of codes that are useful
+# Author: Paula D. Paro Costa
+# Purpose: Collection of snnipets that may be useful
 #          to someone that likes to play with image processing.
 #
 # Updates:
@@ -17,12 +17,16 @@
 #               to reflect changes in the library procdb (shapes variable as list
 #               of tuples)
 #  05/07/2013 - Added functions: 'alignPairShapes', 'RST', 'alignNImages'
+#  17/07/2013 - Added class 'Eigentextures'
+#  23/07/2013 - Changed the 'loadMatrixFromFile' function to determine automatically
+#               the size of the matrix if not provided.
 #
 # Notice:
 # Copyright (C) 2013  Paula D. Paro Costa
 #=============================================================================
 
 import numpy as np
+import numpy.linalg as la
 import Image,ImageDraw
 import cv2
 import os
@@ -78,11 +82,12 @@ def drawPointsOnImage(im,x,y,radius=5,zoom=1,convert=True,color=(255,255,255)):
 # Calculates the centroid of a shape
 # sv --> shape vector defined by 'k' points
 #        with coordinates x and y.
-#        sv=(x0,y0,x1,y2,...,xk,yk)
+#        sv=[[x0,y0],[x1,y1],...,[xk,yk]]
 #==================================================
 def centroid(sv):
-    sv_x=sv[0::2]
-    sv_y=sv[1::2]
+    sv=np.asarray(sv)
+    sv_x=sv[:,0]
+    sv_y=sv[:,1]
     xc=sum(sv_x)/float(len(sv_x))
     yc=sum(sv_y)/float(len(sv_y))
     return xc,yc
@@ -493,21 +498,39 @@ def dumpMatrix2File(matrix,filename):
 
 #========================================================================
 #               loadMatrixFromFile
-#
-# filename -> name of the file to be created
-# rows -> number of rows of the matrix
-# cols -> number of cols of the matrix
-#
 #========================================================================
-def loadMatrixFromFile(filename, rows,cols):
+def loadMatrixFromFile(filename, rows=0,cols=0,sep=','):
+    """
+
+    Loads a numpy matrix from a text file, typically a CSV file.
+
+    Key arguments:
+    filename -- text
+    rows -- (optional) specifies the number of rows of the matrix
+    cols -- (optional) specifies the number of columns of the matrix
+    sep -- separator of the columns, the default is a comma
+    """
     datafile=open(filename,'r')
-    matrix=np.asarray(np.zeros((rows,cols)))
-    for i in range(rows):
+    if rows!=0 and cols!=0:    
+        matrix=np.asarray(np.zeros((rows,cols)))
+        for i in range(rows):
+            aux=datafile.readline()
+            aux=aux.split(sep)
+            matrix[i]=np.asarray(aux,dtype=np.float64)
+            #print 'Reading line '+str(i)+' of file '+filename
+        return matrix
+    else:
         aux=datafile.readline()
-        aux=aux.split(',')
-        matrix[i]=np.asarray(aux,dtype=np.float64)
-        #print 'Reading line '+str(i)+' of file '+filename
-    return matrix
+        aux=aux.split(sep)
+        matrix=np.asarray([aux],dtype=np.float64)
+        aux=datafile.readline()
+        while aux!="":
+            aux=aux.split(sep)
+            #print aux
+            matrix=np.append(matrix,np.asarray([aux],dtype=np.float64),0)
+            aux=datafile.readline()
+        return matrix
+        
 
 
 #========================================================================
@@ -713,3 +736,264 @@ def cropnscaleImageDB(imagedb,newimagedb,ox,oy,width,height,scale,folder="",verb
     newimagedb.close()
 
     return True
+
+#=================================================================================
+#               Eigentextures
+#=================================================================================
+
+class Eigentextures:
+    '''
+
+    This class implements the principal components analysis (PCA) or
+    the eigendecomposition of high dimensional vectors.
+    This class was designed having in mind its use for whole images or
+    parts of images, or simply, textures.
+    If the images contain faces, the algorithm implemented here is
+    equivalent to the Eigenfaces algorithm presented by Matthew Turk and
+    Alex Pentland.
+    The variables names correspond to the variables present in the paper
+    "Eigenfaces for Recognition", Matthew Turk and Alex Pentland, 1991.
+
+    Key arguments:
+    trainingset -   Array of rasterized textures. Each sample corresponds to
+                    a row of the array.
+    evr -           Explained variance ratio: indicates how much of the overall variance
+                    is explained by the corresponding principal component or eigenvector.
+    numpc -         This parameter is used to inform how many principal components the
+                    function should consider.
+    '''
+    
+    def __init__(self,trainingset,verbose=False):
+        self.__verbose=verbose
+        self.M=trainingset.shape[0]
+        self.N=trainingset.shape[1]
+
+        # STEP 1
+        # Gamma is the matrix which columns are the rasterized pixels of each image of
+        # the training set
+        Gamma=np.transpose(trainingset)
+    
+
+        # STEP 2
+        # Compute Psi, that is the average texture over the training set.
+        Psi=Gamma.mean(1)
+        self.Psi=Psi
+        Psi=(Psi.round()).astype(np.int32)
+        Psi=np.reshape(Psi,(Psi.shape[0],1))
+
+        # STEP 3
+        # Subtracts the average face from all samples, creating a zero mean
+        # distribution Phi.
+        self.__Phi=np.asarray(np.zeros(Gamma.shape),dtype=np.int32)
+        self.__Phi=Gamma-Psi
+        del Gamma
+        del trainingset
+        if self.__verbose==True: print "Eigentextures:\tPhi created successfully."
+
+        # STEP 4
+        # A minor product of the covariance matrix is calculated.
+        Phi_t=np.transpose(self.__Phi)
+        L=np.dot(Phi_t,self.__Phi)
+        del Phi_t
+        L=L/self.M
+        if self.__verbose==True: print "Eigentextures:\tMinor product generated successfully."
+
+
+        # STEP 5
+        # Calculates the eigenvalues(w) and eigenvectors(v) of
+        # the minor product L.
+        self.__w,self.__v=la.eig(L)
+    
+        del L
+
+        # STEP 6
+        # Order the eigenvalues and their corresponding eigenvectors
+        # in the descending order.
+        indices=np.argsort(self.__w)
+        indices=indices[::-1]           # descending order
+        self.__w=self.__w[indices]
+        self.__v=self.__v[:,indices]
+        # Calculating the explained variance ratio.
+        self.evr=self.__w/np.sum(self.__w)
+        
+        if self.__verbose==True: print "Eigentextures:\tObject created succesfully."
+        return
+
+    def getEigentextures(self,numpc="all"):
+        
+        # Calculates the eigenvectors of the original covariance matrix
+        if numpc=='all':
+            self.__u=np.asarray(np.zeros((self.N,self.M)))
+            for col in range(self.M):
+                if self.__verbose==True: print "Calculating eigentexture "+str(col+1)
+                h=np.dot(self.__Phi,self.__v[:,col])
+                h=h/la.norm(h)
+                self.__u[:,col]=h
+            return self.__u
+        elif numpc>0 and numpc<=self.M:
+            numpc=int(numpc+0.5)
+            self.__u=np.asarray(np.zeros((self.N,numpc)))
+            for col in range(numpc):
+                if self.__verbose==True: print "Calculating eigentexture "+str(col+1)
+                h=np.dot(self.__Phi,self.__v[:,col])
+                h=h/la.norm(h)
+                self.__u[:,col]=h
+            return self.__u
+        else:
+            print "Eigentextures:\tInvalid value for numpc."
+  
+            return
+    
+    def getEigentexturesEVR(self,variance=1):
+             
+        # Calculates the eigenvectors of the original covariance matrix
+        if variance>=1:
+            self.__u=np.asarray(np.zeros((self.N,self.M)))
+            for col in range(self.M):
+                if self.__verbose==True: print "Calculating eigentexture "+str(col+1)
+                h=np.dot(self.__Phi,self.__v[:,col])
+                h=h/la.norm(h)
+                self.__u[:,col]=h
+            return self.__u
+        elif variance<1 and variance>0:
+            cols=np.where(np.cumsum(self.evr)<=variance)[0]
+            self.__u=np.asarray(np.zeros((self.N,len(cols))))
+            for col in cols:
+                if self.__verbose==True: print "Calculating eigentexture "+str(col+1)
+                h=np.dot(self.__Phi,self.__v[:,col])
+                h=h/la.norm(h)
+                self.__u[:,col]=h
+            return self.__u
+        else:
+            print "Eigentextures:\t Invalid explained value ratio parameter."
+            return
+    
+    def saveEigentextures2File(self,filename,numpc="all"):
+        u=self.getEigentextures(numpc)
+        dumpMatrix2File(u,filename)
+        return
+    
+    def saveEVR2File(self,filename,variance=1):
+        u=self.getEigentexturesEVR(variance)
+        dumpMatrix2File(u,filename)
+        return
+
+
+    
+#=================================================================================
+#               PCA
+#=================================================================================
+
+class PCA:
+    '''
+
+    This class is a simple implementation of principal components analysis (PCA)
+    through the computation of the eigenvectors of the covariance matrix of a training
+    set of samples. For high dimensional vectors, see the class Eigentextures.
+
+    Key arguments:
+    trainingset -   Matrix of samples. Each sample corresponds to
+                    a row of the array.
+    evr -           Explained variance ratio: indicates how much of the overall variance
+                    is explained by the corresponding principal component or eigenvector.
+    numpc -         This parameter is used to inform how many principal components the
+                    function should consider.
+    '''
+    
+    def __init__(self,trainingset,verbose=False):
+        self.__verbose=verbose
+        self.N=trainingset.shape[0] # number of samples/trials
+        self.M=trainingset.shape[1] # number of dimensions (size of the sample vector)
+
+        # STEP 2
+        # Compute Psi, that is the average vector considering the training set
+        Psi=trainingset.mean(0)
+        self.Psi=Psi
+        
+
+        # STEP 3
+        # Subtracts the average from all samples, creating a zero mean
+        # distribution Phi.
+        Phi=np.asarray(np.zeros(trainingset.shape))
+        Phi=trainingset-Psi
+        
+        if self.__verbose==True: print "PCA:\tPhi created successfully."
+
+        # STEP 4
+        # Computes the covariance matrix.
+        # covariance=1/((N-1)*trainingset_t*trainingset)
+        
+        Phi_t=np.transpose(Phi) # M x N matrix
+        covariance=(np.dot(Phi_t,Phi))/(self.N-1)
+        self.cov=covariance
+        
+               
+        self.__w,self.__v=la.eig(covariance)
+        
+        # The covariance is a positive semi-definite matrix
+        # and all of its eigenvalues are positive.
+        # However, the linalg.eig function may return small and
+        # negative eigenvalues. Before calculating the explained variance ratio,
+        # values below 1e-10 are made equal zero.
+        self.__w=np.where(self.__w<=1e-10,0,self.__w)
+               
+        # Putting eigenvectors in the descending order of eigenvalues
+        indices=np.argsort(self.__w)
+        indices=indices[::-1]      
+        self.__w=self.__w[indices]
+        self.__v=self.__v[:,indices]
+        # Calculating the explained variance ratio.
+        self.evr=self.__w/np.sum(self.__w)
+        
+        if self.__verbose==True: print "PCA:\tObject created succesfully."
+        return
+
+    def getPC(self,numpc="all"):
+        
+        
+        # Calculates the eigenvectors of the original covariance matrix
+        if numpc=='all':
+            return self.__v
+        elif numpc>0 and numpc<=self.N:
+            numpc=int(numpc)   
+            return self.__v[:,0:numpc]
+        else:
+            print "PCA:\tInvalid value for numpc."
+  
+            return
+    
+    def getEVR(self,variance=1):
+             
+        # Calculates the eigenvectors of the original covariance matrix
+        if variance>=1:
+            return self.__v
+        elif variance<1 and variance>0:
+            cols=np.where(np.cumsum(self.evr)<=variance)[0]
+            return self.__v[:,cols]
+        else:
+            print "PCA:\t Invalid explained variance ratio parameter."
+            return
+    
+    def savePC2File(self,filename,numpc="all"):
+        v=self.getPC(numpc)
+        dumpMatrix2File(v,filename)
+        return
+    
+    def saveEVR2File(self,filename,variance=1):
+        v=self.getEVR(variance)
+        dumpMatrix2File(v,filename)
+        return
+
+
+        
+    
+
+        
+    
+                
+                
+            
+    
+        
+    
+    
